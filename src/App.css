@@ -1,407 +1,366 @@
-import { useState, useEffect, useCallback } from 'react'
-import { ethers } from 'ethers'
-import './App.css'
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500&display=swap');
 
-const CONTRACT_ADDRESS = '0x1c5b5b9dcb46d4ca16e8387419ba7f7c3f269ae2'
-const PHAROS_CHAIN_ID = 1672
-const PHAROS_CHAIN_ID_HEX = '0x688'
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
-const PHAROS_NETWORK = {
-  chainId: PHAROS_CHAIN_ID_HEX,
-  chainName: 'Pharos Mainnet',
-  nativeCurrency: { name: 'PROS', symbol: 'PROS', decimals: 18 },
-  rpcUrls: ['https://rpc.pharos.xyz'],
-  blockExplorerUrls: ['https://pharosscan.xyz'],
+:root {
+  --bg: #080b12;
+  --surface: #0e1420;
+  --surface-2: #141c2e;
+  --border: rgba(255,255,255,0.06);
+  --border-2: rgba(255,255,255,0.1);
+  --text: #f0f2f8;
+  --text-2: #8b9ab5;
+  --text-3: #4a5568;
+  --accent: #5b8eff;
+  --accent-2: #7c5cfc;
+  --green: #34d399;
+  --amber: #fbbf24;
+  --red: #f87171;
+  --radius: 12px;
+  --radius-sm: 8px;
+  --font: 'Inter', system-ui, sans-serif;
+  --font-mono: 'JetBrains Mono', monospace;
 }
 
-const ABI = [
-  'function deposit() external payable',
-  'function withdraw() external',
-  'function myPosition() external view returns (uint256 amount, uint256 depositTime, uint256 unlockTime, uint256 secondsRemaining, bool isLocked, bool withdrawn)',
-  'function vaultStats() external view returns (uint256 totalDeposited, uint256 totalUsers, uint256 lockDurationDays)',
-]
-
-const formatPROS = (wei) => {
-  if (!wei) return '0'
-  const val = parseFloat(ethers.formatEther(wei))
-  return val < 0.001 ? val.toFixed(6) : val.toFixed(4)
+html, body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font);
+  font-size: 14px;
+  line-height: 1.6;
+  min-height: 100vh;
+  -webkit-font-smoothing: antialiased;
 }
 
-const formatTime = (seconds) => {
-  if (!seconds || seconds <= 0) return 'Ready to withdraw'
-  const d = Math.floor(seconds / 86400)
-  const h = Math.floor((seconds % 86400) / 3600)
-  const m = Math.floor((seconds % 3600) / 60)
-  if (d > 0) return `${d}d ${h}h remaining`
-  if (h > 0) return `${h}h ${m}m remaining`
-  return `${m}m remaining`
+button { cursor: pointer; font-family: var(--font); border: none; outline: none; }
+input { font-family: var(--font); outline: none; }
+a { text-decoration: none; }
+
+.app {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  max-width: 780px;
+  margin: 0 auto;
+  padding: 0 24px;
+  position: relative;
 }
 
-const shortAddr = (addr) => addr ? `${addr.slice(0, 6)}...${addr.slice(-4)}` : ''
-
-function Toast({ message, type, onClose }) {
-  useEffect(() => {
-    const t = setTimeout(onClose, 4000)
-    return () => clearTimeout(t)
-  }, [onClose])
-  return (
-    <div className={`toast toast-${type}`}>
-      <span>{message}</span>
-      <button onClick={onClose} className="toast-close">✕</button>
-    </div>
-  )
+.orb {
+  position: fixed;
+  border-radius: 50%;
+  filter: blur(80px);
+  pointer-events: none;
+  z-index: 0;
+}
+.orb-1 {
+  width: 500px; height: 500px;
+  background: radial-gradient(circle, rgba(91,142,255,0.12) 0%, transparent 70%);
+  top: -100px; right: -100px;
+}
+.orb-2 {
+  width: 400px; height: 400px;
+  background: radial-gradient(circle, rgba(124,92,252,0.1) 0%, transparent 70%);
+  bottom: 0; left: -100px;
 }
 
-export default function App() {
-  const [wallet, setWallet] = useState(null)
-  const [provider, setProvider] = useState(null)
-  const [signer, setSigner] = useState(null)
-  const [contract, setContract] = useState(null)
-  const [wrongNetwork, setWrongNetwork] = useState(false)
-  const [vaultStats, setVaultStats] = useState(null)
-  const [position, setPosition] = useState(null)
-  const [walletBalance, setWalletBalance] = useState(null)
-  const [depositAmount, setDepositAmount] = useState('')
-  const [loading, setLoading] = useState(false)
-  const [toast, setToast] = useState(null)
-  const [activeTab, setActiveTab] = useState('deposit')
+.header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 24px 0 20px;
+  border-bottom: 1px solid var(--border);
+  position: relative;
+  z-index: 10;
+}
 
-  const showToast = (message, type = 'info') => setToast({ message, type })
+.header-brand { display: flex; align-items: center; gap: 10px; }
 
-  const connect = async () => {
-    if (!window.ethereum) {
-      showToast('No wallet detected. Please install MetaMask.', 'error')
-      window.open('https://metamask.io/download/', '_blank')
-      return
-    }
-    try {
-      setLoading(true)
-      const accounts = await window.ethereum.request({ method: 'eth_requestAccounts' })
-      const prov = new ethers.BrowserProvider(window.ethereum)
-      const network = await prov.getNetwork()
-      if (Number(network.chainId) !== PHAROS_CHAIN_ID) {
-        setWrongNetwork(true)
-        setWallet(accounts[0])
-        setProvider(prov)
-        return
-      }
-      const sign = await prov.getSigner()
-      const ct = new ethers.Contract(CONTRACT_ADDRESS, ABI, sign)
-      setWallet(accounts[0])
-      setProvider(prov)
-      setSigner(sign)
-      setContract(ct)
-      setWrongNetwork(false)
-      showToast('Connected to Pharos Mainnet', 'success')
-    } catch (e) {
-      showToast(e.message || 'Connection failed', 'error')
-    } finally {
-      setLoading(false)
-    }
-  }
+.brand-icon {
+  width: 34px; height: 34px;
+  background: linear-gradient(135deg, #1a2540, #0e1a35);
+  border: 1px solid var(--border-2);
+  border-radius: var(--radius-sm);
+  display: flex; align-items: center; justify-content: center;
+  color: var(--accent);
+}
 
-  const switchNetwork = async () => {
-    try {
-      setLoading(true)
-      await window.ethereum.request({
-        method: 'wallet_switchEthereumChain',
-        params: [{ chainId: PHAROS_CHAIN_ID_HEX }],
-      })
-    } catch (e) {
-      if (e.code === 4902) {
-        await window.ethereum.request({
-          method: 'wallet_addEthereumChain',
-          params: [PHAROS_NETWORK],
-        })
-      }
-    } finally {
-      setLoading(false)
-      await connect()
-    }
-  }
+.brand-name { font-weight: 600; font-size: 15px; letter-spacing: -0.02em; color: var(--text); }
 
-  const fetchData = useCallback(async () => {
-    if (!contract || !wallet || !provider) return
-    try {
-      const [stats, pos, bal] = await Promise.all([
-        contract.vaultStats(),
-        contract.myPosition(),
-        provider.getBalance(wallet),
-      ])
-      setVaultStats(stats)
-      setPosition(pos)
-      setWalletBalance(bal)
-    } catch (e) {
-      console.error('Fetch error:', e)
-    }
-  }, [contract, wallet, provider])
+.brand-tag {
+  font-size: 11px; padding: 3px 8px; border-radius: 20px;
+  background: rgba(91,142,255,0.12); color: var(--accent);
+  font-weight: 500; border: 1px solid rgba(91,142,255,0.2);
+}
 
-  useEffect(() => {
-    fetchData()
-    const interval = setInterval(fetchData, 10000)
-    return () => clearInterval(interval)
-  }, [fetchData])
+.wallet-pill {
+  display: flex; align-items: center; gap: 8px;
+  padding: 8px 14px;
+  background: var(--surface); border: 1px solid var(--border-2);
+  border-radius: 20px; font-size: 13px;
+  font-family: var(--font-mono); color: var(--text-2);
+}
 
-  useEffect(() => {
-    if (!window.ethereum) return
-    const handleAccounts = () => connect()
-    const handleChain = () => connect()
-    window.ethereum.on('accountsChanged', handleAccounts)
-    window.ethereum.on('chainChanged', handleChain)
-    return () => {
-      window.ethereum.removeListener('accountsChanged', handleAccounts)
-      window.ethereum.removeListener('chainChanged', handleChain)
-    }
-  }, [])
+.wallet-dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
+.wallet-dot.ok { background: var(--green); box-shadow: 0 0 8px var(--green); }
+.wallet-dot.warn { background: var(--amber); box-shadow: 0 0 8px var(--amber); }
 
-  const handleDeposit = async () => {
-    if (!depositAmount || parseFloat(depositAmount) <= 0) {
-      showToast('Enter a valid amount', 'error')
-      return
-    }
-    try {
-      setLoading(true)
-      const tx = await contract.deposit({ value: ethers.parseEther(depositAmount) })
-      showToast('Transaction submitted...', 'info')
-      await tx.wait()
-      showToast('Deposit successful!', 'success')
-      setDepositAmount('')
-      await fetchData()
-    } catch (e) {
-      showToast(e.reason || e.message || 'Transaction failed', 'error')
-    } finally {
-      setLoading(false)
-    }
-  }
+.btn-header {
+  display: flex; align-items: center; gap: 7px;
+  padding: 9px 18px;
+  background: linear-gradient(135deg, var(--accent), var(--accent-2));
+  color: #fff; border-radius: 20px;
+  font-size: 13px; font-weight: 500;
+  transition: opacity 0.15s, transform 0.1s;
+}
+.btn-header:hover:not(:disabled) { opacity: 0.88; transform: translateY(-1px); }
+.btn-header:disabled { opacity: 0.5; cursor: not-allowed; }
 
-  const handleWithdraw = async () => {
-    try {
-      setLoading(true)
-      const tx = await contract.withdraw()
-      showToast('Withdrawal submitted...', 'info')
-      await tx.wait()
-      showToast('Withdrawn successfully!', 'success')
-      await fetchData()
-    } catch (e) {
-      showToast(e.reason || e.message || 'Withdrawal failed', 'error')
-    } finally {
-      setLoading(false)
-    }
-  }
+.banner-warn {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 12px 16px;
+  background: rgba(251,191,36,0.08); border: 1px solid rgba(251,191,36,0.2);
+  border-radius: var(--radius-sm); margin-top: 16px;
+  font-size: 13px; color: var(--amber);
+  position: relative; z-index: 10;
+}
 
-  const hasPosition = position && position.amount > 0n
-  const canWithdraw = hasPosition && !position.isLocked && !position.withdrawn
+.btn-switch {
+  padding: 6px 14px; background: transparent;
+  border: 1px solid var(--amber); color: var(--amber);
+  border-radius: 6px; font-size: 12px; font-weight: 500;
+  transition: all 0.15s;
+}
+.btn-switch:hover:not(:disabled) { background: var(--amber); color: #000; }
 
-  return (
-    <div className="app">
-      <div className="orb orb-1" />
-      <div className="orb orb-2" />
+.main { flex: 1; padding: 40px 0 32px; position: relative; z-index: 5; }
 
-      <header className="header">
-        <div className="header-brand">
-          <div className="brand-icon">
-            <svg width="18" height="18" viewBox="0 0 20 20" fill="none">
-              <path d="M10 2L18 7V13L10 18L2 13V7L10 2Z" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round"/>
-              <path d="M10 2V18M2 7L18 13M18 7L2 13" stroke="currentColor" strokeWidth="1.5" opacity="0.35"/>
-            </svg>
-          </div>
-          <span className="brand-name">RealFiVault</span>
-          <span className="brand-tag">Pharos</span>
-        </div>
-        <div className="header-right">
-          {wallet ? (
-            <div className="wallet-pill">
-              <span className={`wallet-dot ${wrongNetwork ? 'warn' : 'ok'}`} />
-              <span>{shortAddr(wallet)}</span>
-            </div>
-          ) : (
-            <button className="btn-header" onClick={connect} disabled={loading}>
-              {loading ? <span className="spinner" /> : 'Connect Wallet'}
-            </button>
-          )}
-        </div>
-      </header>
+.landing { display: flex; justify-content: center; }
 
-      {wrongNetwork && wallet && (
-        <div className="banner-warn">
-          <span>⚠ Switch to Pharos Mainnet to continue</span>
-          <button className="btn-switch" onClick={switchNetwork} disabled={loading}>
-            {loading ? 'Switching...' : 'Switch Network'}
-          </button>
-        </div>
-      )}
+.landing-inner {
+  display: flex; flex-direction: column; align-items: flex-start;
+  max-width: 620px; width: 100%; padding-top: 32px;
+}
 
-      <main className="main">
-        {!wallet ? (
-          <div className="landing">
-            <div className="landing-inner">
-              <div className="landing-badge">
-                <span className="badge-dot" />
-                Live on Pharos Mainnet
-              </div>
-              <h1 className="landing-headline">
-                Savings that answer<br />to no one but you.
-              </h1>
-              <p className="landing-sub">
-                Deposit PROS. Lock for 30 days. Withdraw permissionlessly.
-                No bank. No KYC. No middleman — just code.
-              </p>
-              <div className="landing-actions">
-                <button className="btn-primary" onClick={connect} disabled={loading}>
-                  {loading ? <><span className="spinner" /> Connecting...</> : 'Connect Wallet'}
-                </button>
-                <a href={`https://pharosscan.xyz/address/${CONTRACT_ADDRESS}`} target="_blank" rel="noreferrer" className="btn-ghost">
-                  View Contract ↗
-                </a>
-              </div>
-              <div className="features">
-                {[
-                  { icon: '🔒', title: 'Non-custodial', desc: 'Only you control your funds' },
-                  { icon: '⚡', title: 'Instant settlement', desc: 'Sub-second finality on Pharos' },
-                  { icon: '🌍', title: 'Permissionless', desc: 'Open to anyone, anywhere' },
-                ].map((f) => (
-                  <div key={f.title} className="feature-card">
-                    <span className="feature-icon">{f.icon}</span>
-                    <div className="feature-title">{f.title}</div>
-                    <div className="feature-desc">{f.desc}</div>
-                  </div>
-                ))}
-              </div>
-              <div className="contract-strip">
-                <span className="contract-label">Contract</span>
-                <a href={`https://pharosscan.xyz/address/${CONTRACT_ADDRESS}`} target="_blank" rel="noreferrer" className="contract-addr">
-                  {CONTRACT_ADDRESS}
-                </a>
-              </div>
-            </div>
-          </div>
-        ) : wrongNetwork ? (
-          <div className="landing">
-            <div className="landing-inner" style={{textAlign:'center',alignItems:'center'}}>
-              <h1 className="landing-headline" style={{fontSize:'2.2rem'}}>Wrong Network</h1>
-              <p className="landing-sub">RealFiVault runs on Pharos Mainnet only.</p>
-              <button className="btn-primary" onClick={switchNetwork} disabled={loading}>
-                {loading ? 'Switching...' : 'Switch to Pharos'}
-              </button>
-            </div>
-          </div>
-        ) : (
-          <div className="dashboard">
-            <div className="stats-grid">
-              {[
-                { label: 'Total Deposited', value: vaultStats ? `${formatPROS(vaultStats.totalDeposited)} PROS` : '—', icon: '📦' },
-                { label: 'Total Users', value: vaultStats ? vaultStats.totalUsers.toString() : '—', icon: '👥' },
-                { label: 'Lock Period', value: vaultStats ? `${vaultStats.lockDurationDays.toString()} Days` : '—', icon: '🔐' },
-                { label: 'Your Balance', value: walletBalance !== null ? `${formatPROS(walletBalance)} PROS` : '—', icon: '💳' },
-              ].map((s) => (
-                <div key={s.label} className="stat-card">
-                  <span className="stat-icon">{s.icon}</span>
-                  <div className="stat-label">{s.label}</div>
-                  <div className="stat-value">{s.value}</div>
-                </div>
-              ))}
-            </div>
+.landing-badge {
+  display: flex; align-items: center; gap: 8px;
+  font-size: 12px; font-weight: 500; color: var(--green);
+  padding: 6px 14px;
+  background: rgba(52,211,153,0.08); border: 1px solid rgba(52,211,153,0.2);
+  border-radius: 20px; margin-bottom: 28px;
+}
 
-            <div className="panel">
-              {hasPosition && (
-                <div className="position-block">
-                  <div className="position-top">
-                    <span className="position-label">Your Position</span>
-                    <span className={`position-badge ${position.withdrawn ? 'closed' : position.isLocked ? 'locked' : 'ready'}`}>
-                      {position.withdrawn ? 'Withdrawn' : position.isLocked ? '🔒 Locked' : '✅ Unlocked'}
-                    </span>
-                  </div>
-                  <div className="position-amount">
-                    {formatPROS(position.amount)}<span className="position-unit"> PROS</span>
-                  </div>
-                  <div className="position-time">
-                    {position.withdrawn ? 'Position closed' : formatTime(Number(position.secondsRemaining))}
-                  </div>
-                  {!position.withdrawn && (
-                    <div className="progress-track">
-                      <div className="progress-fill" style={{
-                        width: position.isLocked
-                          ? `${Math.max(4, 100 - (Number(position.secondsRemaining) / (30 * 86400)) * 100)}%`
-                          : '100%'
-                      }} />
-                    </div>
-                  )}
-                  {canWithdraw && (
-                    <button className="btn-withdraw" onClick={handleWithdraw} disabled={loading}>
-                      {loading ? <><span className="spinner" /> Processing...</> : 'Withdraw Funds'}
-                    </button>
-                  )}
-                </div>
-              )}
+.badge-dot {
+  width: 7px; height: 7px; border-radius: 50%;
+  background: var(--green); box-shadow: 0 0 8px var(--green);
+  animation: pulse 2s infinite;
+}
 
-              {(!hasPosition || position.withdrawn) && (
-                <div className="action-block">
-                  <div className="tabs">
-                    {['deposit', 'how it works'].map((t) => (
-                      <button key={t} className={`tab ${activeTab === t ? 'active' : ''}`} onClick={() => setActiveTab(t)}>
-                        {t}
-                      </button>
-                    ))}
-                  </div>
+@keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
 
-                  {activeTab === 'deposit' && (
-                    <div className="deposit-form">
-                      <label className="input-label">Amount to deposit</label>
-                      <div className="input-wrap">
-                        <input
-                          type="number"
-                          placeholder="0.00"
-                          value={depositAmount}
-                          onChange={(e) => setDepositAmount(e.target.value)}
-                          className="amount-input"
-                          min="0"
-                          step="0.01"
-                        />
-                        <span className="input-tag">PROS</span>
-                      </div>
-                      <p className="input-hint">Locked for 30 days · Withdraw anytime after expiry</p>
-                      <button className="btn-primary full" onClick={handleDeposit} disabled={loading || !depositAmount}>
-                        {loading ? <><span className="spinner" /> Processing...</> : 'Deposit & Lock'}
-                      </button>
-                    </div>
-                  )}
+.landing-headline {
+  font-size: 3.8rem; font-weight: 300;
+  line-height: 1.08; letter-spacing: -0.04em;
+  margin-bottom: 20px;
+  background: linear-gradient(135deg, #f0f2f8 0%, #8b9ab5 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
 
-                  {activeTab === 'how it works' && (
-                    <div className="how-it-works">
-                      {[
-                        { n: '01', title: 'Deposit PROS', desc: 'Send any amount of PROS. Your position is created on-chain instantly.' },
-                        { n: '02', title: '30-day lock', desc: 'Funds are secured by code. Not even the contract owner can touch them.' },
-                        { n: '03', title: 'Withdraw freely', desc: 'After expiry, withdraw directly to your wallet. No permission required.' },
-                      ].map((s) => (
-                        <div key={s.n} className="how-step">
-                          <span className="step-num">{s.n}</span>
-                          <div>
-                            <div className="step-title">{s.title}</div>
-                            <div className="step-desc">{s.desc}</div>
-                          </div>
-                        </div>
-                      ))}
-                      <div className="how-contract">
-                        <span>Contract</span>
-                        <a href={`https://pharosscan.xyz/address/${CONTRACT_ADDRESS}`} target="_blank" rel="noreferrer">
-                          {shortAddr(CONTRACT_ADDRESS)} ↗
-                        </a>
-                      </div>
-                    </div>
-                  )}
-                </div>
-              )}
-            </div>
-          </div>
-        )}
-      </main>
+.landing-sub {
+  font-size: 16px; color: var(--text-2);
+  line-height: 1.7; margin-bottom: 36px; max-width: 460px;
+}
 
-      <footer className="footer">
-        <span>RealFiVault · Pharos Mainnet · 2026</span>
-        <a href={`https://pharosscan.xyz/address/${CONTRACT_ADDRESS}`} target="_blank" rel="noreferrer">Verify Contract ↗</a>
-      </footer>
+.landing-actions { display: flex; gap: 12px; margin-bottom: 48px; flex-wrap: wrap; }
 
-      {toast && <Toast message={toast.message} type={toast.type} onClose={() => setToast(null)} />}
-    </div>
-  )
+.btn-primary {
+  display: inline-flex; align-items: center; gap: 8px;
+  padding: 13px 28px;
+  background: linear-gradient(135deg, var(--accent), var(--accent-2));
+  color: #fff; border-radius: var(--radius-sm);
+  font-size: 14px; font-weight: 500; transition: all 0.15s;
+  box-shadow: 0 4px 20px rgba(91,142,255,0.25);
+}
+.btn-primary:hover:not(:disabled) { opacity: 0.88; transform: translateY(-1px); }
+.btn-primary:disabled { opacity: 0.45; cursor: not-allowed; transform: none; }
+.btn-primary.full { width: 100%; justify-content: center; }
+
+.btn-ghost {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 13px 24px; background: transparent;
+  border: 1px solid var(--border-2); color: var(--text-2);
+  border-radius: var(--radius-sm); font-size: 14px; font-weight: 500;
+  transition: all 0.15s;
+}
+.btn-ghost:hover { border-color: var(--text-2); color: var(--text); }
+
+.features { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; margin-bottom: 36px; width: 100%; }
+
+.feature-card {
+  padding: 20px; background: var(--surface);
+  border: 1px solid var(--border); border-radius: var(--radius);
+  transition: border-color 0.2s;
+}
+.feature-card:hover { border-color: var(--border-2); }
+.feature-icon { font-size: 22px; display: block; margin-bottom: 10px; }
+.feature-title { font-size: 13px; font-weight: 600; color: var(--text); margin-bottom: 4px; }
+.feature-desc { font-size: 12px; color: var(--text-2); line-height: 1.5; }
+
+.contract-strip {
+  display: flex; align-items: center; gap: 12px;
+  padding: 12px 16px; background: var(--surface);
+  border: 1px solid var(--border); border-radius: var(--radius-sm); width: 100%;
+}
+.contract-label {
+  font-size: 11px; font-weight: 600; color: var(--text-3);
+  text-transform: uppercase; letter-spacing: 0.08em; white-space: nowrap;
+}
+.contract-addr {
+  font-family: var(--font-mono); font-size: 11px;
+  color: var(--text-2); word-break: break-all; transition: color 0.15s;
+}
+.contract-addr:hover { color: var(--accent); }
+
+.dashboard { display: flex; flex-direction: column; gap: 24px; }
+
+.stats-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; }
+
+.stat-card {
+  padding: 18px; background: var(--surface);
+  border: 1px solid var(--border); border-radius: var(--radius);
+  transition: border-color 0.2s;
+}
+.stat-card:hover { border-color: var(--border-2); }
+.stat-icon { font-size: 20px; margin-bottom: 10px; display: block; }
+.stat-label { font-size: 11px; color: var(--text-3); font-weight: 500; text-transform: uppercase; letter-spacing: 0.06em; margin-bottom: 4px; }
+.stat-value { font-size: 15px; font-weight: 600; color: var(--text); font-family: var(--font-mono); }
+
+.panel { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; }
+
+.position-block { padding: 28px; border-bottom: 1px solid var(--border); }
+
+.position-top { display: flex; align-items: center; justify-content: space-between; margin-bottom: 20px; }
+
+.position-label { font-size: 12px; font-weight: 600; color: var(--text-3); text-transform: uppercase; letter-spacing: 0.08em; }
+
+.position-badge { font-size: 12px; padding: 4px 12px; border-radius: 20px; font-weight: 500; }
+.position-badge.locked { background: rgba(251,191,36,0.1); color: var(--amber); border: 1px solid rgba(251,191,36,0.2); }
+.position-badge.ready { background: rgba(52,211,153,0.1); color: var(--green); border: 1px solid rgba(52,211,153,0.2); }
+.position-badge.closed { background: var(--surface-2); color: var(--text-3); border: 1px solid var(--border); }
+
+.position-amount { font-size: 3rem; font-weight: 300; letter-spacing: -0.04em; color: var(--text); margin-bottom: 6px; font-family: var(--font-mono); }
+.position-unit { font-size: 1.2rem; color: var(--text-3); margin-left: 6px; }
+.position-time { font-size: 13px; color: var(--text-2); margin-bottom: 20px; }
+
+.progress-track { height: 4px; background: var(--surface-2); border-radius: 2px; margin-bottom: 24px; overflow: hidden; }
+.progress-fill { height: 100%; background: linear-gradient(90deg, var(--accent), var(--accent-2)); border-radius: 2px; transition: width 0.5s ease; }
+
+.btn-withdraw {
+  display: inline-flex; align-items: center; gap: 8px;
+  padding: 12px 24px;
+  background: linear-gradient(135deg, var(--green), #10b981);
+  color: #000; border-radius: var(--radius-sm);
+  font-size: 14px; font-weight: 600; transition: all 0.15s;
+}
+.btn-withdraw:hover:not(:disabled) { opacity: 0.88; transform: translateY(-1px); }
+.btn-withdraw:disabled { opacity: 0.45; cursor: not-allowed; }
+
+.action-block {}
+
+.tabs { display: flex; border-bottom: 1px solid var(--border); padding: 0 4px; }
+
+.tab {
+  padding: 16px 20px; background: transparent; color: var(--text-3);
+  font-size: 13px; font-weight: 500;
+  border-bottom: 2px solid transparent; margin-bottom: -1px;
+  transition: all 0.15s; text-transform: capitalize;
+}
+.tab:hover { color: var(--text-2); }
+.tab.active { color: var(--text); border-bottom-color: var(--accent); }
+
+.deposit-form { padding: 28px; display: flex; flex-direction: column; gap: 16px; }
+
+.input-label { font-size: 12px; font-weight: 600; color: var(--text-3); text-transform: uppercase; letter-spacing: 0.08em; }
+
+.input-wrap {
+  display: flex; align-items: center;
+  background: var(--surface-2); border: 1px solid var(--border-2);
+  border-radius: var(--radius-sm); padding: 14px 18px; gap: 12px;
+  transition: border-color 0.15s;
+}
+.input-wrap:focus-within { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(91,142,255,0.1); }
+
+.amount-input {
+  flex: 1; background: transparent; border: none;
+  color: var(--text); font-size: 1.6rem; font-weight: 300;
+  letter-spacing: -0.02em; font-family: var(--font-mono); width: 100%;
+}
+.amount-input::placeholder { color: var(--text-3); }
+.input-tag { font-size: 13px; font-weight: 600; color: var(--text-2); font-family: var(--font-mono); flex-shrink: 0; }
+.input-hint { font-size: 12px; color: var(--text-3); line-height: 1.5; }
+
+.how-it-works { padding: 28px; display: flex; flex-direction: column; gap: 24px; }
+.how-step { display: flex; gap: 18px; align-items: flex-start; }
+
+.step-num {
+  font-family: var(--font-mono); font-size: 11px; font-weight: 600;
+  color: var(--accent); background: rgba(91,142,255,0.1);
+  border: 1px solid rgba(91,142,255,0.2); border-radius: 6px;
+  padding: 4px 8px; flex-shrink: 0; margin-top: 2px;
+}
+
+.step-title { font-size: 14px; font-weight: 600; color: var(--text); margin-bottom: 4px; }
+.step-desc { font-size: 13px; color: var(--text-2); line-height: 1.6; }
+
+.how-contract {
+  display: flex; align-items: center; justify-content: space-between;
+  padding-top: 16px; border-top: 1px solid var(--border);
+  font-size: 12px; color: var(--text-3);
+}
+.how-contract a { color: var(--accent); transition: opacity 0.15s; }
+.how-contract a:hover { opacity: 0.75; }
+
+.footer {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 20px 0 28px; border-top: 1px solid var(--border);
+  font-size: 12px; color: var(--text-3);
+  position: relative; z-index: 5;
+}
+.footer a { color: var(--text-3); transition: color 0.15s; }
+.footer a:hover { color: var(--accent); }
+
+.spinner {
+  display: inline-block; width: 14px; height: 14px;
+  border: 2px solid rgba(255,255,255,0.3); border-top-color: #fff;
+  border-radius: 50%; animation: spin 0.7s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+.toast {
+  position: fixed; bottom: 24px; right: 24px;
+  display: flex; align-items: center; gap: 12px;
+  padding: 14px 18px; border-radius: var(--radius-sm);
+  font-size: 13px; z-index: 1000; max-width: 380px;
+  backdrop-filter: blur(12px);
+  animation: slideUp 0.2s ease;
+  box-shadow: 0 8px 32px rgba(0,0,0,0.4);
+}
+@keyframes slideUp { from { transform: translateY(10px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
+.toast-success { background: rgba(52,211,153,0.12); border: 1px solid rgba(52,211,153,0.25); color: var(--green); }
+.toast-error { background: rgba(248,113,113,0.12); border: 1px solid rgba(248,113,113,0.25); color: var(--red); }
+.toast-info { background: var(--surface); border: 1px solid var(--border-2); color: var(--text-2); }
+.toast-close { background: transparent; color: inherit; font-size: 16px; opacity: 0.6; padding: 0 2px; flex-shrink: 0; }
+.toast-close:hover { opacity: 1; }
+
+@media (max-width: 640px) {
+  .app { padding: 0 16px; }
+  .landing-headline { font-size: 2.6rem; }
+  .stats-grid { grid-template-columns: repeat(2, 1fr); }
+  .features { grid-template-columns: 1fr; }
+  .landing-actions { flex-direction: column; }
+  .btn-primary, .btn-ghost { width: 100%; justify-content: center; }
+  .position-amount { font-size: 2.2rem; }
+  .banner-warn { flex-direction: column; gap: 10px; align-items: flex-start; }
 }
